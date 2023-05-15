@@ -1,0 +1,523 @@
+---
+title: "Journal (reproducible report)"
+author: "Dina Abdelmguid"
+date: "2023-15-05"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    number_sections: true
+    toc_depth: 3
+    code_folding: hide
+---
+
+
+# Challenge_3 Web scrapping 
+
+## Task description
+
+1. Get some data via an API. There are millions of providers, that offer API access for free and have good documentation about how to query their service. You just have to google them. You can use whatever service you want. For example, you can get data about your listening history (spotify), get data about flights (skyscanner) or just check the weather forecast.
+
+2. Scrape one of the competitor websites of canyon (either https://www.rosebikes.de/ or https://www.radon-bikes.de) and create a small database. The database should contain the model names and prices for at least one category. Use the selectorgadget to get a good understanding of the website structure.
+
+## Solution
+
+\#Session3_ Challenge:
+
+Notes:
+ \# 200: The request has succeeded.
+ \# 403: The client does not have access rights to the content.
+ \# 404: Not found. The server can not find the requested resource.
+
+
+**1.0 LIBRARIES**
+
+```{r}
+library(tidyverse) # Main Package - Loads dplyr, purrr, etc.
+library(rvest)     # HTML Hacking & Web Scraping
+library(xopen)     # Quickly opening URLs
+library(jsonlite)  # converts JSON files to R objects
+library(glue)      # concatenate strings
+library(stringi)   # character string/text processing
+library(RSQLite)
+library(httr)
+library("rstudioapi")
+library(kableExtra)
+``` 
+
+**Read wibsite API**
+
+```{r}
+  url = "https://itunes.apple.com/search?term=radiohead"
+  
+  resp <- GET(url)
+##########################
+#From a character vector, we can convert it into list data structure using
+#the fromJSON() function from the jsonlite library. We can use toJSON() to
+#convert something back to the original JSON structure.
+##########################
+
+respone_tbl <- resp %>% .$content %>% rawToChar() %>% fromJSON()
+  
+kable(respone_tbl)
+```
+
+**WEBSCRAPING**
+
+
+\# 1.0 COLLECT PRODUCT FAMILIES ----
+
+```{r}
+url_home          <- "https://www.rosebikes.de"
+```
+
+\# Read in the HTML for the entire webpage
+
+```{r}
+html_home         <- read_html(url_home)
+```
+
+\# Web scrape the ids for the families
+
+
+```{r}
+#| eval: false
+bike_family_tbl <- html_home %>%
+  
+  # Get the nodes for the families ...
+  html_nodes(css = ".main-navigation-category-with-tiles__item > a") %>%
+  # ...and extract the information of the id attribute
+  html_attr('href') %>% 
+  
+  # Remove the product families Gear and Outlet and Woman 
+  # (because the female bikes are also listed with the others)
+  discard(.p = ~stringr::str_detect(.x,"sale|reise|urban|kinder|cyclocross|e-bike")) %>%
+  
+  # Convert vector to tibble
+  enframe( name = "", value = "subdirectory") %>%
+  select(-"") %>%
+  
+  # Add the domain, because we will get only the subdirectories
+  mutate(
+    url = glue("https://www.rosebikes.de{subdirectory}")
+  ) %>%
+  separate(col    = subdirectory,
+           into   = c("S","MI", "category_name"),
+           sep    = "/")%>%
+
+  select(-"S",-"MI")
+
+kable(bike_family_tbl, caption = "Different bikes families URL")
+
+```
+
+\# 2.0 COLLECT BIKE DATA
+
+\# 2.2 Wrap it into a function
+
+```{r}
+get_bike_data <- function(url, category) {
+
+  html_bike<- read_html(url)
+  
+  bikes <- html_bike %>% html_nodes(css = ".catalog-category-bikes__title-text")%>% 
+           html_text() %>% 
+           enframe(name = "No.", value = "Bike Name")
+  
+  bike_url  <- bikes%>%
+               mutate (
+              
+                Price = html_bike %>% 
+                html_nodes(css = ".catalog-category-bikes__price-title")%>% 
+                html_text()
+              )
+    
+  for (type in bikes) {
+       bike_url <- bike_url %>% mutate(
+       category_name = category
+        )
+  }
+  return (bike_url)
+}
+```
+
+\# Extract the urls as a character vector
+
+```{r}
+
+bike_category_url_vec <- bike_family_tbl %>% pull(url)
+bike_category_cag_vec <- bike_family_tbl %>% pull(category_name)
+
+bike_data_1 =  get_bike_data(bike_category_url_vec[1],bike_category_cag_vec[1])
+bike_data_2 =  get_bike_data(bike_category_url_vec[2],bike_category_cag_vec[2])
+bike_data_3 =  get_bike_data(bike_category_url_vec[3],bike_category_cag_vec[3])
+bike_data_4 =  get_bike_data(bike_category_url_vec[4],bike_category_cag_vec[4])
+
+# Merge the list into a tibble
+bike_data_tbl <- bind_rows(bike_data_1,bike_data_2,bike_data_3, bike_data_4)
+saveRDS(bike_data_tbl, "bike_data_tbl.rds")
+
+kable(bike_data_tbl)
+```
+
+# Session_4 challenge: Data wrangling
+
+## Task description:
+
+1. Patent Dominance: What US company / corporation has the most patents? List the 10 US companies with the most assigned/granted patents.
+
+2. Recent patent acitivity: What US company had the most patents granted in 2019? List the top 10 companies with the most new granted patents for 2019.
+
+3. Innovation in Tech: What is the most innovative tech sector? For the top 10 companies (worldwide) with the most patents, what are the top 5 USPTO tech main classes?
+
+## Solution:
+
+**Patents analysis** 
+
+\# Importing data: 
+
+```{r}
+library(vroom)
+# Tidyverse
+library(tidyverse)
+
+# Data Table
+library(data.table)
+
+# Counter
+library(tictoc)
+```
+
+**Patents DATA IMPORT**
+
+```{r}
+# Patents data preparation:
+
+col_types <- list(
+  id = col_character(),
+  date = col_date("%Y-%m-%d"),
+  num_claims = col_double()
+)
+
+patent_tbl <- vroom(
+  file       = "patent.tsv", 
+  delim      = "\t", 
+  col_types  = col_types,
+  na         = c("", "NA", "NULL")
+)
+
+# Assignee data preparation:
+
+col_types_assignee <- list(
+  id = col_character(),
+  type = col_character(),
+  organization = col_character()
+)
+
+assignee_tbl <- vroom(
+  file       = "assignee.tsv", 
+  delim      = "\t", 
+  col_types  = col_types_assignee,
+  na         = c("", "NA", "NULL")
+)
+
+
+# Patent-Assignee data preparation:
+
+col_types_patent_assignee <- list(
+  patent_id = col_character(),
+  assignee_id = col_character()
+)
+
+
+patent_assignee_tbl <- vroom(
+  file       = "patent_assignee.tsv", 
+  delim      = "\t", 
+  col_types  = col_types_patent_assignee,
+  na         = c("", "NA", "NULL")
+)
+
+col_types_uspc <- list(
+  patent_id = col_character(),
+  mainclass_id = col_number(),
+  sequence = col_number()
+)
+
+# USPC data preparation:
+
+uspc_tbl <- vroom(
+  file       = "uspc.tsv", 
+  delim      = "\t", 
+  col_types  = col_types_uspc,
+  na         = c("", "NA", "NULL")
+)
+```
+
+**Acquisition Data**
+
+```{r}
+
+setDT(assignee_tbl)
+setDT(patent_tbl)
+setDT(patent_assignee_tbl)
+setDT(uspc_tbl)
+
+kable(patent_tbl %>% glimpse())
+kable(assignee_tbl %>% glimpse())
+kable(patent_assignee_tbl %>% glimpse())
+kable(uspc_tbl %>% glimpse())
+
+```
+
+**DATA WRANGLING**
+
+\# Start the analysis:
+
+**Task1**
+
+```{r}
+#########################################################################
+# Q1.Patent Dominance: What US company / corporation has the most patents? 
+# List the 10 US companies with the most assigned/granted patents.
+## Output: 
+#########################################################################
+
+#summarize and count:
+
+setnames(assignee_tbl, "id", "assignee_id")
+
+combined_data <- merge(x = patent_assignee_tbl, y = assignee_tbl, by = "assignee_id")
+
+
+us_patents <- combined_data %>%
+  filter(type == 2)%>%
+  filter(!is.na(patent_id) || !is.na(organization)) %>%
+  select(-type, -assignee_id)%>% 
+  group_by(organization) %>%
+  count(patent_id) %>%
+  select(-patent_id)%>%
+  summarise(total = sum(n))%>%
+  arrange(desc(total))   
+
+us_top_10 <- us_patents %>% slice(1:10)
+
+kable(us_top_10)
+```
+
+**Task2**
+
+```{r}
+#########################################################################
+# Q2. Recent patent acitivity: What US company had the most patents granted in 2014? 
+#List the top 10 companies with the most new granted patents for 2019.
+#########################################################################
+
+
+tbl_2 <- patent_tbl %>%   
+         separate(col  = date,
+         into = c("year", "month", "day"),
+          sep  = "-", remove = TRUE) %>%
+          mutate(
+              month = as.numeric(month)
+            )%>%
+          filter(month == 01)%>%
+          select(-year, -day)
+
+setnames(tbl_2, "id", "patent_id")
+combined_data_2 <- merge(x = tbl_2, y = combined_data, by = "patent_id")
+
+us_top10_2014_01 <- combined_data_2%>%
+                    filter(type == 2)%>%
+                    filter(!is.na(patent_id) || !is.na(organization)) %>%
+                    select(organization, patent_id) %>%
+                    group_by(organization) %>%
+                    count(patent_id) %>%   
+                    summarise(total_patents = sum(n))%>%
+                    arrange(desc(total_patents)) %>% slice(1:10)  
+
+us_top10_2014_01_new <- combined_data_2%>%
+                        filter(type == 2 & num_claims == 1)%>%
+                        filter(!is.na(patent_id) || !is.na(organization)) %>%
+                        select(organization, patent_id) %>%
+                        group_by(organization) %>%
+                        count(patent_id) %>%   
+                        summarise(total_patents = sum(n))%>%
+                        arrange(desc(total_patents)) %>% slice(1:10)
+
+kable(us_top10_2014_01, caption = "US to 10 compnies with granted patents")
+kable(us_top10_2014_01_new, caption =  "US top 10 compnies with New granted patents")
+```
+
+**Task3**
+
+```{r}
+ #########################################################################
+# Q. Innovation in Tech: What is the most innovative tech sector? 
+# What is the most innovative tech sector? For the top 10 companies (worldwide)
+# with the most patents, what are the top 5 USPTO tech main classes?
+#########################################################################
+
+combined_data_3 <- merge(x = uspc_tbl, y = combined_data_2, by = "patent_id")
+
+
+
+top10_worlwide_patents <- combined_data_3  %>%
+                  filter(!is.na(patent_id) || !is.na(organization))%>%
+                  group_by(organization) %>%
+                  arrange(desc(mainclass_id)) %>% # set mainclass order first, the result will be sorted automatically 
+                  count(patent_id) %>%
+                  select(-patent_id)%>%
+                  summarise(total_patents_wordwide = sum(n))%>%
+                  ungroup() %>%
+                  arrange(desc(total_patents_wordwide)) %>% slice(1:10)  
+
+top10_worlwid_top5_upts <- top10_worlwide_patents %>% slice(1:5)  
+
+kable(top10_worlwide_patents, caption = "Top 10 granted patents compnies WORLD WIDE")
+kable(top10_worlwid_top5_upts, caption = "Top 5 compnies acquiring UPTS among the TOP 10")
+```
+
+# Session_5 Data visualization:
+
+## Task description
+
+Challenge 1
+Goal: Map the time course of the cumulative Covid-19 cases!
+
+Challenge 2
+Goal: Visualize the distribution of the mortality rate (deaths / population)
+
+
+## Solustion
+
+```{r}
+#Import required Libraries
+
+library(scales)
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(readxl)
+library(ggthemes)
+library(dplyr)
+library(maps)
+```
+
+**Task 1** 
+
+```{r}
+
+covid_data_tbl <- read_csv("https://opendata.ecdc.europa.eu/covid19/casedistribution/csv")
+
+#Table for Challenge 1 before plot
+
+  covid_data_select_tbl<- covid_data_tbl %>%
+  select(countriesAndTerritories,cases,dateRep,month,year,day)%>%
+  relocate(year,month,day)%>%
+  filter(year==2020,month>1) %>%
+  filter(day!=1)%>%
+  filter(countriesAndTerritories=="France"|countriesAndTerritories=="Germany"|countriesAndTerritories=="United_Kingdom"|countriesAndTerritories=="Spain"|countriesAndTerritories=="United_States_of_America")%>%
+  group_by(countriesAndTerritories,month)%>%
+  summarize(totalcases = sum(cases)) %>%
+  ungroup()
+    
+kable(covid_data_select_tbl, caption = "Filtered data")  
+
+```
+
+**Prepared Plots**
+
+```{r}
+#Prepare plot
+  covid_data_select_tbl%>%
+  ggplot(aes(month ,totalcases, color = countriesAndTerritories)) +
+        geom_smooth(method = "loess", span = 0.2)+
+        scale_y_continuous(labels = scales::dollar_format(scale  = 1/1e6, 
+                                                        prefix = "", 
+                                                        suffix = "M")) +
+        scale_x_continuous(breaks = seq(2, 11 , by=1),labels= c("February","March","April","May","June","July","August","September","October","November")) +
+ # scale_x_continuous(labels = scales::dollar_format(scale = 1/1e6,
+                                                     #prefix= "",
+                                                    # suffix= "February")) +
+   
+labs(
+  title = ("Covid-19 confirmed cases worldwide"),
+  subtitle = ("United States has the highest rate of cases"),
+  caption = "",
+  x = "(Year 2020)",
+  y = "Cumulative Cases",
+  color = "Country"
+
+          )+
+    geom_label(aes(label = (totalcases)), 
+              hjust = "inward",
+              size  = 3,
+              color = RColorBrewer::brewer.pal(n = 11, name = "RdBu")[11]) 
+    
+```
+
+**Task 2**
+
+\#World data table:
+
+```{r}
+#importing data
+
+covid_data_tbl <- read_csv("https://opendata.ecdc.europa.eu/covid19/casedistribution/csv")
+
+world <- map_data("world")%>%mutate(across(region, str_replace_all, "_", " ")) %>%
+  mutate(region = case_when(
+    
+    region == "UK"~ "United_Kingdom",
+    region == "USA"~"United_States_of_America" ,
+    region == "Czech_Republic"~"Czechia",
+    TRUE ~ region
+    
+  ))
+covid_data_tbl%>%mutate(across(countriesAndTerritories, str_replace_all, "_", " ")) %>%
+  mutate(countriesAndTerritories = case_when(
+    
+    countriesAndTerritories == "United Kingdom" ~ "United_Kingdom",
+    countriesAndTerritories == "United_States_of_America" ~ "United States of America",
+    countriesAndTerritories == "Czechia"~"Czechia",
+    TRUE ~ countriesAndTerritories
+    
+  ))
+
+#manipulation of world data table
+world_map<-world%>%select(region,long,lat,group)%>%rename(countriesAndTerritories=region)
+
+```
+
+\#Covid data:
+
+```{r}
+#manipulation of covid data table
+covid_modified_data_tbl<- covid_data_tbl%>%select(day,month,year,countriesAndTerritories,deaths,popData2019)%>%
+  group_by(year,countriesAndTerritories,popData2019)%>%
+  summarise(total_death=sum(deaths))%>%
+  ungroup()%>%
+  mutate(mortality_rate=(total_death/popData2019)*100)
+
+#merging data between 2 tables 
+All_data_tbl<-left_join(covid_modified_data_tbl,world_map,by="countriesAndTerritories")%>%filter(year==2020)
+```
+
+**Prepared Plots**
+
+```{r}
+
+#first layer of the map
+world_map <- map_data("world")
+ggplot(world_map, aes(x = long, y = lat, group = group)) +
+  geom_polygon(fill="lightgray", colour = "black",size=0.1)
+
+#second layer of the map
+ggplot(data=All_data_tbl, aes(x=long, y=lat, group = group))+
+  geom_polygon(aes(fill = mortality_rate), color = "red",size=0.1)+
+  scale_fill_viridis_c(option = "C", alpha = 0.75 )
+```
+
+
+

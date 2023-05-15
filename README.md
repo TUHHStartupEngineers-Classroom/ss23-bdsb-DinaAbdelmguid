@@ -10,7 +10,7 @@ Once your content is on GitHub, you can easily host it as a GitHub Pages website
 
 [https://tuhhstartupengineers.github.io/quarto_journal_template/](https://tuhhstartupengineers.github.io/quarto_journal_template/)
 
-pw: `test` 
+pw: `SOSE_2023` 
 
 Click `Remember me` if you do not want to enter it every time.
 
